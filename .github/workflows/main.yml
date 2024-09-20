@@ -1,0 +1,167 @@
+name: Compile
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Cache dependencies
+      uses: actions/cache@v2
+      with:
+        path: /usr/local/lib
+        key: ${{ runner.os }}-clang-${{ hashFiles('**/proton/bin') }}
+        restore-keys: |
+          ${{ runner.os }}-clang-
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y && sudo apt install -y \
+        nano bc bison ca-certificates curl flex gcc git libc6-dev libssl-dev openssl \
+        python-is-python3 ssh wget zip zstd sudo make clang gcc-arm-linux-gnueabi \
+        software-properties-common build-essential libarchive-tools gcc-aarch64-linux-gnu \
+        libssl-dev libffi-dev libncurses5 libncurses5-dev zlib1g zlib1g-dev \
+        libreadline-dev libbz2-dev libsqlite3-dev pigz python2 python3
+
+    - name: Clone AOSP Clang and set up environment variables
+      run: |
+        git clone --depth=1 https://gitlab.com/LeCmnGend/clang.git proton
+        echo "CLANG_PATH=${GITHUB_WORKSPACE}/proton/bin" >> $GITHUB_ENV
+        echo "PATH=${GITHUB_WORKSPACE}/proton/bin:${PATH}" >> $GITHUB_ENV
+        echo "CROSS_COMPILE=${GITHUB_WORKSPACE}/proton/bin/aarch64-linux-gnu-" >> $GITHUB_ENV
+        echo "CROSS_COMPILE_ARM32=${GITHUB_WORKSPACE}/proton/bin/arm-linux-gnueabi-" >> $GITHUB_ENV
+
+    - name: Build the kernel
+      env:
+        CLANG_PATH: ${{ env.CLANG_PATH }}
+        PATH: ${{ env.PATH }}
+        CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
+        CROSS_COMPILE_ARM32: ${{ env.CROSS_COMPILE_ARM32 }}
+      run: |
+        make CC="${CLANG_PATH}/clang --target=aarch64-linux-gnu" O=out ARCH=arm64 \
+        CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+        lineage-msm8998-yoshino-poplar_dsds_defconfig
+        make CC="${CLANG_PATH}/clang --target=aarch64-linux-gnu" O=out ARCH=arm64 \
+        CROSS_COMPILE=${CROSS_COMPILE} CROSS_COMPILE_ARM32=${CROSS_COMPILE_ARM32} \
+        -j$(nproc --all) AR=llvm-ar NM=llvm-nm OBJCOPY=aarch64-linux-gnu-objcopy \
+        OBJDUMP=llvm-objdump STRIP=llvm-strip
+
+    - name: List output directory
+      run: ls -R out
+
+    - name: Create Telegram script
+      run: |
+        cat << 'EOF' > kirimtele.sh
+        #!/bin/bash
+
+        # Copyright 2024 Purrr
+        # Github @sandatjepil
+
+        # Ini Pengaturan buat kirim ke supergroup (grup bertopik)
+        # Set 1 untuk Ya | 0 untuk Tidak
+        TG_SUPER=0
+
+        # Isi token BOT disini
+        TG_TOKEN=7459706383:AAEEPCQkEALnVX8i_qOaZR1_B4aj4ulepxM
+
+        # isi ID channel atau grup
+        # Pastikan botnya sudah jadi admin
+        CHATID=-1002171568705
+        # kalo grupnya bertopic isi ini, kalo ngga kosongin aja
+        TOPICID=
+
+        #################################################
+        # BAGIAN INI JANGAN DISENTUH!!
+        #################################################
+        BOT_MSG_URL="https://api.telegram.org/bot$TG_TOKEN/sendMessage"
+        BOT_BUILD_URL="https://api.telegram.org/bot$TG_TOKEN/sendDocument"
+
+        tg_post_msg(){
+            if [ $TG_SUPER = 1 ]; then
+                RESPONSE=$(curl -s -X POST "$BOT_MSG_URL" \
+                -d chat_id="$CHATID" \
+                -d message_thread_id="$TOPICID" \
+                -d "disable_web_page_preview=true" \
+                -d "parse_mode=html" \
+                -d text="$1")
+            else
+                RESPONSE=$(curl -s -X POST "$BOT_MSG_URL" \
+                -d chat_id="$CHATID" \
+                -d "disable_web_page_preview=true" \
+                -d "parse_mode=html" \
+                -d text="$1")
+            fi
+            echo "Response: $RESPONSE"
+        }
+
+        tg_post_build(){
+            #Post MD5Checksum alongwith for easeness
+            MD5CHECK=$(md5sum "$1" | cut -d' ' -f1)
+
+            #Show the Checksum alongwith caption
+            if [ $TG_SUPER = 1 ]; then
+                RESPONSE=$(curl --no-progress-meter -F document=@"$1" "$BOT_BUILD_URL" \
+                -F chat_id="$CHATID"  \
+                -F message_thread_id="$TOPICID" \
+                -F "disable_web_page_preview=true" \
+                -F "parse_mode=Markdown" \
+                -F caption="$2
+        *MD5 Checksum:* \`$MD5CHECK\`")
+            else
+                RESPONSE=$(curl --no-progress-meter -F document=@"$1" "$BOT_BUILD_URL" \
+                -F chat_id="$CHATID"  \
+                -F "disable_web_page_preview=true" \
+                -F "parse_mode=Markdown" \
+                -F caption="$2
+        *MD5 Checksum:* \`$MD5CHECK\`")
+            fi
+            echo "Response: $RESPONSE"
+        }
+
+        case "$1" in
+          file)
+            PESAN=$(tg_post_build "$2" "$3" | grep '"ok":')
+            if (echo ${PESAN} | grep '"ok":true' > /dev/null 2>&1); then
+            echo "berhasil kirim file ke ID ${CHATID}"
+            else
+            echo "gagal kirim file ke ID ${CHATID}"
+            echo "Alasan: ${PESAN}"
+            fi
+            ;;
+          msg)
+            PESAN=$(tg_post_msg "$2" | grep '"ok":')
+            if (echo ${PESAN} | grep '"ok":true' > /dev/null 2>&1); then
+            echo "Berhasil kirim pesan ke ID ${CHATID}"
+            else
+            echo "Gagal kirim pesan ke ID ${CHATID}"
+            echo "Alasan: ${PESAN}"
+            fi
+            ;;
+          help)
+            echo "Cara Pemakaian:"
+            echo ""
+            echo "- Untuk kirim file"
+            echo 'kirimtele.sh file "nama-file" "caption"'
+            echo "- Untuk kirim pesan"
+            echo 'kirimtele.sh msg "caption"'
+            ;;
+          *)
+            echo "command tidak ditemukan"
+            echo "ketik kirimtele.sh help"
+            echo "untuk cara penggunaan"
+            ;;
+        esac
+        #################################################
+        # BAGIAN INI JANGAN DISENTUH!!
+        #################################################
+        EOF
+        chmod +x kirimtele.sh
+
+    - name: Upload kernel artifacts to Telegram
+      run: |
+        ./kirimtele.sh file "out/arch/arm64/boot/Image.gz-dtb" "Kernel Image with DTB"
